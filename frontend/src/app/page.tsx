@@ -46,18 +46,23 @@ export default function HomePage() {
   // Load result onto canvas when done
   useEffect(() => {
     if (stage !== "done" || !resultUrl) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = resultUrl;
-    img.onload = () => {
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
-      subjectImgRef.current = img;
-    };
+    // Small delay to ensure canvas is mounted in DOM
+    const timer = setTimeout(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = resultUrl;
+      img.onload = () => {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d")!;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        subjectImgRef.current = img;
+      };
+    }, 100);
+    return () => clearTimeout(timer);
   }, [stage, resultUrl]);
 
   const processImage = useCallback(async (file: File) => {
