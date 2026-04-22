@@ -2,15 +2,22 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Sparkles, Download, Zap, Layers, Plus, Minus, RotateCcw, Image as ImageIcon } from "lucide-react";
+import { Upload, Sparkles, Download, Zap, Layers, Plus, Minus, RotateCcw, Image as ImageIcon, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
 
 type Stage = "idle" | "processing" | "done";
 type BrushMode = "add" | "remove";
 type BgMode = "transparent" | "color" | "gradient" | "image";
+type Tab = "recortar" | "fondo" | "efectos";
 
-const PRESET_COLORS = ["#ffffff","#000000","#f3f4f6","#1e1e2e","#ef4444","#f97316","#eab308","#22c55e","#3b82f6","#8b5cf6","#ec4899","#14b8a6"];
+const PRESET_COLORS = [
+  "#ffffff","#000000","#f3f4f6","#1e1e2e",
+  "#ef4444","#f97316","#eab308","#22c55e",
+  "#3b82f6","#8b5cf6","#ec4899","#14b8a6",
+  "#fef3c7","#dbeafe","#fce7f3","#dcfce7",
+];
+
 const PRESET_GRADIENTS = [
   { label: "Cielo",     value: "linear-gradient(135deg,#667eea,#764ba2)" },
   { label: "Atardecer", value: "linear-gradient(135deg,#f093fb,#f5576c)" },
@@ -18,6 +25,27 @@ const PRESET_GRADIENTS = [
   { label: "Bosque",    value: "linear-gradient(135deg,#43e97b,#38f9d7)" },
   { label: "Fuego",     value: "linear-gradient(135deg,#fa709a,#fee140)" },
   { label: "Noche",     value: "linear-gradient(135deg,#0c0c0c,#1a1a2e)" },
+  { label: "Aurora",    value: "linear-gradient(135deg,#a18cd1,#fbc2eb)" },
+  { label: "Dorado",    value: "linear-gradient(135deg,#f6d365,#fda085)" },
+];
+
+const BG_LIBRARY = [
+  { cat: "Estudio", items: [
+    { label: "Blanco puro",  color: "#ffffff" },
+    { label: "Gris claro",   color: "#f3f4f6" },
+    { label: "Gris medio",   color: "#9ca3af" },
+    { label: "Negro",        color: "#000000" },
+    { label: "Crema",        color: "#fef9ef" },
+    { label: "Azul estudio", color: "#e0f2fe" },
+  ]},
+  { cat: "Colores vivos", items: [
+    { label: "Rojo",     color: "#ef4444" },
+    { label: "Naranja",  color: "#f97316" },
+    { label: "Amarillo", color: "#eab308" },
+    { label: "Verde",    color: "#22c55e" },
+    { label: "Azul",     color: "#3b82f6" },
+    { label: "Violeta",  color: "#8b5cf6" },
+  ]},
 ];
 
 export default function HomePage() {
@@ -25,18 +53,20 @@ export default function HomePage() {
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
-  const [editMode, setEditMode] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("recortar");
   const [showOriginal, setShowOriginal] = useState(false);
+  const [zoom, setZoom] = useState(100);
 
-  // Editor
+  // Canvas refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cursorCanvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const originalImgRef = useRef<HTMLImageElement | null>(null);
+  const resultImgRef = useRef<HTMLImageElement | null>(null);
+
+  // Brush
   const [brushMode, setBrushMode] = useState<BrushMode>("remove");
   const [brushSize, setBrushSize] = useState(20);
   const [isDrawing, setIsDrawing] = useState(false);
-  const originalImgRef = useRef<HTMLImageElement | null>(null);
-  const resultImgRef = useRef<HTMLImageElement | null>(null);
 
   // Background
   const [bgMode, setBgMode] = useState<BgMode>("transparent");
@@ -46,13 +76,30 @@ export default function HomePage() {
   const bgFileRef = useRef<HTMLInputElement>(null);
   const bgImgRef = useRef<HTMLImageElement | null>(null);
 
-  // Load bg image ref when bgImageUrl changes
+  // Effects
+  const [blurBg, setBlurBg] = useState(false);
+  const [blurAmount, setBlurAmount] = useState(8);
+  const [shadow, setShadow] = useState(false);
+  const [shadowOpacity, setShadowOpacity] = useState(40);
+  const [brightness, setBrightness] = useState(100);
+  const [contrast, setContrast] = useState(100);
+  const [saturation, setSaturation] = useState(100);
+
   useEffect(() => {
     if (!bgImageUrl) return;
     const img = new Image();
     img.onload = () => { bgImgRef.current = img; };
     img.src = bgImageUrl;
   }, [bgImageUrl]);
+
+  // Load result img ref
+  useEffect(() => {
+    if (!resultUrl) return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => { resultImgRef.current = img; };
+    img.src = resultUrl;
+  }, [resultUrl]);
 
   const initCanvas = useCallback(() => {
     if (!resultUrl) return;
@@ -67,28 +114,26 @@ export default function HomePage() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
       resultImgRef.current = img;
-      // Also init cursor canvas
       const cc = cursorCanvasRef.current;
       if (cc) { cc.width = img.naturalWidth; cc.height = img.naturalHeight; }
+      if (originalUrl) {
+        const orig = new Image();
+        orig.crossOrigin = "anonymous";
+        orig.onload = () => { originalImgRef.current = orig; };
+        orig.src = originalUrl;
+      }
     };
     img.src = resultUrl;
-    // Load original
-    if (originalUrl) {
-      const orig = new Image();
-      orig.crossOrigin = "anonymous";
-      orig.onload = () => { originalImgRef.current = orig; };
-      orig.src = originalUrl;
-    }
   }, [resultUrl, originalUrl]);
 
   useEffect(() => {
-    if (editMode) setTimeout(initCanvas, 80);
-  }, [editMode, initCanvas]);
+    if (stage === "done") setTimeout(initCanvas, 80);
+  }, [stage, initCanvas]);
 
   const processImage = useCallback(async (file: File) => {
     setStage("processing");
-    setEditMode(false);
     setShowOriginal(false);
+    setZoom(100);
     setOriginalUrl(URL.createObjectURL(file));
     setProgress(20);
     const formData = new FormData();
@@ -116,16 +161,15 @@ export default function HomePage() {
     onDropRejected: () => toast.error("Archivo muy grande o formato no compatible."),
   });
 
-  // Convert mouse event to canvas coordinates
   const getCanvasPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY, scaleX, scaleY };
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
   };
 
-  // Draw cursor circle on cursor canvas
   const drawCursor = (x: number, y: number) => {
     const cc = cursorCanvasRef.current;
     if (!cc) return;
@@ -133,10 +177,10 @@ export default function HomePage() {
     ctx.clearRect(0, 0, cc.width, cc.height);
     ctx.beginPath();
     ctx.arc(x, y, brushSize, 0, Math.PI * 2);
-    ctx.strokeStyle = brushMode === "remove" ? "rgba(255,80,80,0.9)" : "rgba(80,255,120,0.9)";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = brushMode === "remove" ? "rgba(255,60,60,1)" : "rgba(60,220,100,1)";
+    ctx.lineWidth = Math.max(2, brushSize * 0.08);
     ctx.stroke();
-    ctx.fillStyle = brushMode === "remove" ? "rgba(255,80,80,0.15)" : "rgba(80,255,120,0.15)";
+    ctx.fillStyle = brushMode === "remove" ? "rgba(255,60,60,0.15)" : "rgba(60,220,100,0.15)";
     ctx.fill();
   };
 
@@ -169,108 +213,101 @@ export default function HomePage() {
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     setIsDrawing(true);
     const p = getCanvasPos(e);
-    paint(p.x, p.y);
-    drawCursor(p.x, p.y);
+    paint(p.x, p.y); drawCursor(p.x, p.y);
   };
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const p = getCanvasPos(e);
     drawCursor(p.x, p.y);
-    if (!isDrawing) return;
-    paint(p.x, p.y);
+    if (isDrawing) paint(p.x, p.y);
   };
   const handleMouseUp = () => setIsDrawing(false);
   const handleMouseLeave = () => { setIsDrawing(false); clearCursor(); };
 
   const handleReset = () => initCanvas();
 
-  // Build final image with background applied
-  const buildFinalCanvas = (): HTMLCanvasElement => {
-    const sourceCanvas = canvasRef.current!;
-    const off = document.createElement("canvas");
-    off.width = sourceCanvas.width;
-    off.height = sourceCanvas.height;
-    const ctx = off.getContext("2d")!;
-
-    if (bgMode === "color") {
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, off.width, off.height);
-    } else if (bgMode === "gradient") {
-      const match = bgGradient.match(/#[0-9a-f]{3,8}/gi);
-      if (match && match.length >= 2) {
-        const g = ctx.createLinearGradient(0, 0, off.width, off.height);
-        g.addColorStop(0, match[0]); g.addColorStop(1, match[1]);
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, off.width, off.height);
-      }
-    } else if (bgMode === "image" && bgImgRef.current) {
-      const bw = bgImgRef.current.naturalWidth, bh = bgImgRef.current.naturalHeight;
-      const scale = Math.max(off.width / bw, off.height / bh);
-      const sw = bw * scale, sh = bh * scale;
-      ctx.drawImage(bgImgRef.current, (off.width-sw)/2, (off.height-sh)/2, sw, sh);
-    }
-
-    ctx.drawImage(sourceCanvas, 0, 0);
-    return off;
+  // Get CSS filter string for subject
+  const getSubjectFilter = () => {
+    const parts = [];
+    if (brightness !== 100) parts.push(`brightness(${brightness}%)`);
+    if (contrast !== 100) parts.push(`contrast(${contrast}%)`);
+    if (saturation !== 100) parts.push(`saturate(${saturation}%)`);
+    return parts.join(" ") || "none";
   };
-
-  const handleDownload = () => {
-    if (editMode) {
-      const off = buildFinalCanvas();
-      const isPng = bgMode === "transparent";
-      const a = document.createElement("a");
-      a.href = off.toDataURL(isPng ? "image/png" : "image/jpeg", 0.95);
-      a.download = `clearbg-resultado.${isPng ? "png" : "jpg"}`;
-      a.click();
-    } else {
-      // Vista previa — if bg is set, draw on offscreen canvas
-      if (bgMode !== "transparent" && resultImgRef.current) {
-        // init canvas first then download
-        const tmpCanvas = document.createElement("canvas");
-        const img = resultImgRef.current;
-        tmpCanvas.width = img.naturalWidth;
-        tmpCanvas.height = img.naturalHeight;
-        const ctx = tmpCanvas.getContext("2d")!;
-        if (bgMode === "color") { ctx.fillStyle = bgColor; ctx.fillRect(0,0,tmpCanvas.width,tmpCanvas.height); }
-        else if (bgMode === "gradient") {
-          const match = bgGradient.match(/#[0-9a-f]{3,8}/gi);
-          if (match?.length >= 2) { const g = ctx.createLinearGradient(0,0,tmpCanvas.width,tmpCanvas.height); g.addColorStop(0,match[0]); g.addColorStop(1,match[1]); ctx.fillStyle=g; ctx.fillRect(0,0,tmpCanvas.width,tmpCanvas.height); }
-        } else if (bgMode === "image" && bgImgRef.current) {
-          const bw = bgImgRef.current.naturalWidth, bh = bgImgRef.current.naturalHeight;
-          const scale = Math.max(tmpCanvas.width/bw, tmpCanvas.height/bh);
-          ctx.drawImage(bgImgRef.current, (tmpCanvas.width-bw*scale)/2, (tmpCanvas.height-bh*scale)/2, bw*scale, bh*scale);
-        }
-        ctx.drawImage(img, 0, 0);
-        const a = document.createElement("a");
-        a.href = tmpCanvas.toDataURL("image/jpeg", 0.95);
-        a.download = "clearbg-resultado.jpg";
-        a.click();
-      } else {
-        const a = document.createElement("a");
-        a.href = resultUrl!;
-        a.download = "clearbg-resultado.png";
-        a.click();
-      }
-    }
-  };
-
-  // Load resultImgRef when resultUrl changes (for download in preview mode)
-  useEffect(() => {
-    if (!resultUrl) return;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => { resultImgRef.current = img; };
-    img.src = resultUrl;
-  }, [resultUrl]);
 
   const getPreviewStyle = (): React.CSSProperties => {
     const checker = `url("data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='10' height='10' fill='%23333'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23333'/%3E%3Crect x='10' y='0' width='10' height='10' fill='%23222'/%3E%3Crect x='0' y='10' width='10' height='10' fill='%23222'/%3E%3C/svg%3E")`;
     if (bgMode === "color") return { background: bgColor };
     if (bgMode === "gradient") return { background: bgGradient };
-    if (bgMode === "image" && bgImageUrl) return { backgroundImage: `url(${bgImageUrl})`, backgroundSize: "cover", backgroundPosition: "center" };
+    if (bgMode === "image" && bgImageUrl) return {};
     return { backgroundImage: checker };
   };
 
-  const reset = () => { setStage("idle"); setOriginalUrl(null); setResultUrl(null); setProgress(0); setBgMode("transparent"); setEditMode(false); setShowOriginal(false); };
+  const handleDownload = () => {
+    const source = canvasRef.current || (resultImgRef.current ? null : null);
+    const W = resultImgRef.current?.naturalWidth || 1000;
+    const H = resultImgRef.current?.naturalHeight || 1000;
+    const off = document.createElement("canvas");
+    off.width = W; off.height = H;
+    const ctx = off.getContext("2d")!;
+
+    // Draw background
+    if (bgMode === "color") { ctx.fillStyle = bgColor; ctx.fillRect(0,0,W,H); }
+    else if (bgMode === "gradient") {
+      const match = bgGradient.match(/#[0-9a-f]{3,8}/gi);
+      if (match?.length >= 2) { const g = ctx.createLinearGradient(0,0,W,H); g.addColorStop(0,match[0]); g.addColorStop(1,match[1]); ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+    } else if (bgMode === "image" && bgImgRef.current) {
+      const bw=bgImgRef.current.naturalWidth, bh=bgImgRef.current.naturalHeight;
+      const scale=Math.max(W/bw,H/bh);
+      ctx.drawImage(bgImgRef.current,(W-bw*scale)/2,(H-bh*scale)/2,bw*scale,bh*scale);
+    }
+
+    // Draw blur bg if enabled
+    if (blurBg && originalImgRef.current) {
+      ctx.filter = `blur(${blurAmount}px)`;
+      ctx.drawImage(originalImgRef.current, 0, 0, W, H);
+      ctx.filter = "none";
+    }
+
+    // Draw shadow if enabled
+    if (shadow && canvasRef.current) {
+      ctx.shadowColor = `rgba(0,0,0,${shadowOpacity/100})`;
+      ctx.shadowBlur = 30;
+      ctx.shadowOffsetY = 15;
+    }
+
+    // Apply brightness/contrast/saturation
+    if (brightness !== 100 || contrast !== 100 || saturation !== 100) {
+      ctx.filter = getSubjectFilter();
+    }
+
+    // Draw subject
+    if (canvasRef.current) {
+      ctx.drawImage(canvasRef.current, 0, 0);
+    } else if (resultImgRef.current) {
+      ctx.drawImage(resultImgRef.current, 0, 0);
+    }
+    ctx.filter = "none";
+    ctx.shadowColor = "transparent";
+
+    const isPng = bgMode === "transparent" && !blurBg;
+    const a = document.createElement("a");
+    a.href = off.toDataURL(isPng ? "image/png" : "image/jpeg", 0.95);
+    a.download = `clearbg-resultado.${isPng ? "png" : "jpg"}`;
+    a.click();
+  };
+
+  const reset = () => {
+    setStage("idle"); setOriginalUrl(null); setResultUrl(null);
+    setProgress(0); setBgMode("transparent"); setShowOriginal(false);
+    setZoom(100); setBlurBg(false); setShadow(false);
+    setBrightness(100); setContrast(100); setSaturation(100);
+  };
+
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "recortar", label: "✂️ Recortar" },
+    { id: "fondo",    label: "🖼 Fondo" },
+    { id: "efectos",  label: "✨ Efectos" },
+  ];
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white">
@@ -289,6 +326,7 @@ export default function HomePage() {
       <section className="pt-32 pb-20 px-6 max-w-6xl mx-auto">
         <AnimatePresence mode="wait">
 
+          {/* IDLE */}
           {stage === "idle" && (
             <motion.div key="idle" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="text-center max-w-3xl mx-auto">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#a78bfa]/10 border border-[#a78bfa]/20 text-[#c4b5fd] text-xs font-medium mb-8">
@@ -320,7 +358,7 @@ export default function HomePage() {
               <div className="grid grid-cols-3 gap-4 mt-16">
                 {[
                   { icon: <Zap size={18}/>, title: "GPU en la nube", desc: "2-3 segundos por imagen" },
-                  { icon: <Sparkles size={18}/>, title: "Editor integrado", desc: "Corregí bordes con pincel" },
+                  { icon: <Sparkles size={18}/>, title: "Editor completo", desc: "Pincel, efectos y fondos" },
                   { icon: <Layers size={18}/>, title: "Fondos personalizados", desc: "Color, degradado o imagen" },
                 ].map((f,i) => (
                   <div key={i} className="p-5 rounded-2xl border border-white/5 bg-white/2 text-left">
@@ -333,6 +371,7 @@ export default function HomePage() {
             </motion.div>
           )}
 
+          {/* PROCESSING */}
           {stage === "processing" && (
             <motion.div key="processing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="relative rounded-2xl overflow-hidden border border-white/10 bg-white/2 max-w-2xl mx-auto" style={{ height: 420 }}>
@@ -351,167 +390,270 @@ export default function HomePage() {
             </motion.div>
           )}
 
+          {/* DONE */}
           {stage === "done" && resultUrl && (
             <motion.div key="done" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               {/* Top bar */}
               <div className="flex items-center justify-between mb-4">
                 <div className="flex gap-1 bg-white/5 p-1 rounded-xl">
-                  <button onClick={() => { setEditMode(false); setShowOriginal(false); }}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${!editMode ? "bg-white/10 text-white" : "text-white/40 hover:text-white"}`}>
-                    Vista previa
-                  </button>
-                  <button onClick={() => setEditMode(true)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${editMode ? "bg-white/10 text-white" : "text-white/40 hover:text-white"}`}>
-                    ✏️ Editar bordes
-                  </button>
+                  {tabs.map(t => (
+                    <button key={t.id} onClick={() => setActiveTab(t.id)}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === t.id ? "bg-white/10 text-white" : "text-white/40 hover:text-white"}`}>
+                      {t.label}
+                    </button>
+                  ))}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center">
+                  {/* Zoom */}
+                  <div className="flex items-center gap-1 bg-white/5 rounded-lg px-2 py-1">
+                    <button onClick={() => setZoom(z => Math.max(25, z-25))} className="text-white/40 hover:text-white p-1"><ZoomOut size={14}/></button>
+                    <span className="text-xs text-white/60 w-10 text-center">{zoom}%</span>
+                    <button onClick={() => setZoom(z => Math.min(300, z+25))} className="text-white/40 hover:text-white p-1"><ZoomIn size={14}/></button>
+                  </div>
                   <button onClick={reset} className="text-xs px-3 py-1.5 border border-white/10 rounded-lg text-white/40 hover:text-white transition-colors flex items-center gap-1.5">
-                    <RotateCcw size={11}/> Nueva imagen
+                    <RotateCcw size={11}/> Nueva
                   </button>
                   <button onClick={handleDownload}
                     className="text-xs px-4 py-1.5 bg-[#a78bfa] text-black font-medium rounded-lg hover:bg-[#c4b5fd] transition-colors flex items-center gap-1.5">
-                    <Download size={11}/> Descargar {bgMode === "transparent" ? "PNG" : "JPG"}
+                    <Download size={11}/> Descargar
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-[1fr_280px] gap-6">
-                {/* Image area */}
-                <div ref={containerRef}>
-                  <div className="rounded-2xl overflow-hidden border border-white/10 relative" style={getPreviewStyle()}>
+              <div className="grid grid-cols-[1fr_300px] gap-6">
+                {/* Canvas area */}
+                <div className="overflow-auto rounded-2xl border border-white/10" style={{ maxHeight: 560 }}>
+                  <div style={{ ...getPreviewStyle(), minHeight: 400, position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {/* Blurred original background */}
+                    {blurBg && originalUrl && (
+                      <img src={originalUrl} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                        style={{ filter: `blur(${blurAmount}px)`, transform: "scale(1.05)" }} />
+                    )}
+                    {/* Custom bg image */}
                     {bgMode === "image" && bgImageUrl && (
-                      <img src={bgImageUrl} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                      <img src={bgImageUrl} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
                     )}
 
-                    {/* Preview mode */}
-                    {!editMode && (
-                      <img src={resultUrl} alt="Resultado" className="w-full max-h-[500px] object-contain relative z-10 block" />
+                    {/* Show original overlay */}
+                    {showOriginal && originalUrl && (
+                      <img src={originalUrl} alt="Original"
+                        className="relative z-20 object-contain pointer-events-none"
+                        style={{ maxHeight: 520, transform: `scale(${zoom/100})`, transformOrigin: "center", filter: getSubjectFilter() }} />
                     )}
 
-                    {/* Edit mode */}
-                    {editMode && (
-                      <div className="relative" style={{ cursor: "none" }}>
-                        {/* Original overlay when holding button */}
-                        {showOriginal && originalUrl && (
-                          <img src={originalUrl} alt="Original" className="absolute inset-0 w-full h-full object-contain z-20 pointer-events-none" />
+                    {/* Result — edit mode canvas */}
+                    {!showOriginal && (
+                      <div className="relative z-10" style={{ transform: `scale(${zoom/100})`, transformOrigin: "center", cursor: activeTab === "recortar" ? "none" : "default" }}>
+                        {/* Shadow effect */}
+                        {shadow && (
+                          <div className="absolute inset-0 pointer-events-none" style={{ filter: `drop-shadow(0 ${Math.round(shadowOpacity/5)}px ${Math.round(shadowOpacity/3)}px rgba(0,0,0,${shadowOpacity/100}))`, zIndex: 1 }}>
+                            <canvas ref={canvasRef} className="invisible" />
+                          </div>
                         )}
-                        {/* Main editable canvas */}
                         <canvas
                           ref={canvasRef}
-                          className="w-full max-h-[500px] object-contain block"
-                          style={{ cursor: "none" }}
-                          onMouseDown={handleMouseDown}
-                          onMouseMove={handleMouseMove}
-                          onMouseUp={handleMouseUp}
-                          onMouseLeave={handleMouseLeave}
+                          className="max-h-[520px] object-contain block relative"
+                          style={{
+                            filter: [getSubjectFilter(), shadow ? `drop-shadow(0 ${Math.round(shadowOpacity/5)}px ${Math.round(shadowOpacity/3)}px rgba(0,0,0,${shadowOpacity/100}))` : ""].filter(Boolean).join(" ") || "none",
+                            zIndex: 2,
+                            cursor: activeTab === "recortar" ? "none" : "default",
+                          }}
+                          onMouseDown={activeTab === "recortar" ? handleMouseDown : undefined}
+                          onMouseMove={activeTab === "recortar" ? handleMouseMove : undefined}
+                          onMouseUp={activeTab === "recortar" ? handleMouseUp : undefined}
+                          onMouseLeave={activeTab === "recortar" ? handleMouseLeave : undefined}
                         />
-                        {/* Cursor canvas — overlaid exactly on top */}
                         <canvas
                           ref={cursorCanvasRef}
-                          className="absolute inset-0 w-full h-full pointer-events-none z-10"
-                          style={{ objectFit: "contain" }}
+                          className="absolute inset-0 pointer-events-none"
+                          style={{ zIndex: 3, width: "100%", height: "100%" }}
                         />
                       </div>
                     )}
                   </div>
-
-                  {/* Brush toolbar — only in edit mode */}
-                  {editMode && (
-                    <div className="flex items-center gap-3 p-3 bg-white/3 border border-white/8 rounded-xl mt-3 flex-wrap">
-                      <div className="flex bg-white/5 rounded-lg p-1 gap-1">
-                        <button onClick={() => setBrushMode("remove")}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${brushMode === "remove" ? "bg-red-500/20 text-red-400 border border-red-500/30" : "text-white/40 hover:text-white/70"}`}>
-                          <Minus size={12}/> Quitar fondo
-                        </button>
-                        <button onClick={() => setBrushMode("add")}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${brushMode === "add" ? "bg-green-500/20 text-green-400 border border-green-500/30" : "text-white/40 hover:text-white/70"}`}>
-                          <Plus size={12}/> Recuperar
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-2 flex-1 min-w-[140px]">
-                        <span className="text-xs text-white/30">Tamaño</span>
-                        <input type="range" min={3} max={100} step={1} value={brushSize}
-                          onChange={(e) => setBrushSize(Number(e.target.value))}
-                          className="flex-1 accent-[#a78bfa]" />
-                        <span className="text-xs text-white/50 w-8 text-right">{brushSize}px</span>
-                      </div>
-                      <button
-                        onMouseDown={() => setShowOriginal(true)}
-                        onMouseUp={() => setShowOriginal(false)}
-                        onMouseLeave={() => setShowOriginal(false)}
-                        className={`text-xs px-3 py-1.5 border rounded-lg transition-colors select-none ${showOriginal ? "border-white/30 text-white bg-white/10" : "border-white/10 text-white/40 hover:text-white/70"}`}>
-                        👁 Ver original
-                      </button>
-                      <button onClick={handleReset}
-                        className="text-xs px-3 py-1.5 border border-white/10 rounded-lg text-white/40 hover:text-white/70 transition-colors flex items-center gap-1">
-                        <RotateCcw size={11}/> Resetear
-                      </button>
-                    </div>
-                  )}
                 </div>
 
-                {/* Background panel */}
-                <div className="space-y-4">
-                  <p className="text-sm font-medium text-white/70">Fondo</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {([["transparent","Sin fondo"],["color","Color"],["gradient","Degradado"],["image","Imagen"]] as [BgMode,string][]).map(([m,label]) => (
-                      <button key={m} onClick={() => setBgMode(m)}
-                        className={`py-2 px-3 rounded-xl text-xs font-medium transition-all border ${bgMode === m ? "bg-[#a78bfa]/15 border-[#a78bfa]/40 text-[#a78bfa]" : "border-white/8 text-white/40 hover:text-white/70 hover:border-white/15"}`}>
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+                {/* Right panel */}
+                <div className="space-y-4 overflow-y-auto" style={{ maxHeight: 560 }}>
 
-                  {bgMode === "color" && (
-                    <div>
-                      <div className="grid grid-cols-6 gap-2 mb-3">
-                        {PRESET_COLORS.map(c => (
-                          <button key={c} onClick={() => setBgColor(c)} style={{ background: c }}
-                            className={`w-8 h-8 rounded-lg border-2 transition-all ${bgColor === c ? "border-[#a78bfa] scale-110" : "border-transparent hover:scale-105"}`} />
+                  {/* TAB: Recortar */}
+                  {activeTab === "recortar" && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-white/40 leading-relaxed">Pintá sobre la imagen para borrar o recuperar partes del recorte.</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => setBrushMode("remove")}
+                          className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all border ${brushMode === "remove" ? "bg-red-500/15 border-red-500/40 text-red-400" : "border-white/8 text-white/40 hover:text-white/70"}`}>
+                          <Minus size={14}/> Borrar
+                        </button>
+                        <button onClick={() => setBrushMode("add")}
+                          className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all border ${brushMode === "add" ? "bg-green-500/15 border-green-500/40 text-green-400" : "border-white/8 text-white/40 hover:text-white/70"}`}>
+                          <Plus size={14}/> Restaurar
+                        </button>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-white/50">Tamaño del pincel</span>
+                          <span className="text-xs font-mono text-white/50">{brushSize}px</span>
+                        </div>
+                        <input type="range" min={3} max={120} step={1} value={brushSize}
+                          onChange={e => setBrushSize(Number(e.target.value))}
+                          className="w-full accent-[#a78bfa]" />
+                        <div className="flex justify-between text-[10px] text-white/20 mt-1">
+                          <span>Fino</span><span>Grueso</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onMouseDown={() => setShowOriginal(true)} onMouseUp={() => setShowOriginal(false)} onMouseLeave={() => setShowOriginal(false)}
+                          className={`flex-1 py-2 border rounded-xl text-xs transition-colors select-none ${showOriginal ? "border-white/30 text-white bg-white/10" : "border-white/10 text-white/40 hover:text-white/70"}`}>
+                          👁 Ver original
+                        </button>
+                        <button onClick={handleReset}
+                          className="flex-1 py-2 border border-white/10 rounded-xl text-xs text-white/40 hover:text-white/70 transition-colors flex items-center justify-center gap-1">
+                          <RotateCcw size={11}/> Resetear
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB: Fondo */}
+                  {activeTab === "fondo" && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-2">
+                        {([["transparent","Sin fondo"],["color","Color"],["gradient","Degradado"],["image","Imagen"]] as [BgMode,string][]).map(([m,label]) => (
+                          <button key={m} onClick={() => setBgMode(m)}
+                            className={`py-2.5 px-3 rounded-xl text-xs font-medium transition-all border ${bgMode === m ? "bg-[#a78bfa]/15 border-[#a78bfa]/40 text-[#a78bfa]" : "border-white/8 text-white/40 hover:text-white/70 hover:border-white/15"}`}>
+                            {label}
+                          </button>
                         ))}
                       </div>
-                      <div className="flex items-center gap-3">
-                        <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
-                          className="w-10 h-10 rounded-lg border border-white/10 cursor-pointer bg-transparent" />
-                        <span className="text-xs font-mono text-white/40">{bgColor.toUpperCase()}</span>
+
+                      {bgMode === "color" && (
+                        <div className="space-y-3">
+                          {BG_LIBRARY.map(cat => (
+                            <div key={cat.cat}>
+                              <p className="text-[10px] text-white/30 uppercase tracking-wide mb-2">{cat.cat}</p>
+                              <div className="grid grid-cols-6 gap-1.5">
+                                {cat.items.map(item => (
+                                  <button key={item.color} onClick={() => setBgColor(item.color)}
+                                    style={{ background: item.color }}
+                                    title={item.label}
+                                    className={`w-9 h-9 rounded-lg border-2 transition-all ${bgColor === item.color ? "border-[#a78bfa] scale-110" : "border-transparent hover:scale-105 border-white/10"}`} />
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                          <div className="pt-2 border-t border-white/8">
+                            <p className="text-[10px] text-white/30 uppercase tracking-wide mb-2">Color personalizado</p>
+                            <div className="flex items-center gap-3">
+                              <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
+                                className="w-10 h-10 rounded-lg border border-white/10 cursor-pointer bg-transparent" />
+                              <span className="text-xs font-mono text-white/40">{bgColor.toUpperCase()}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {bgMode === "gradient" && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {PRESET_GRADIENTS.map(g => (
+                            <button key={g.value} onClick={() => setBgGradient(g.value)}
+                              className={`relative h-14 rounded-xl overflow-hidden border-2 transition-all flex items-center justify-center ${bgGradient === g.value ? "border-[#a78bfa]" : "border-transparent hover:border-white/20"}`}
+                              style={{ background: g.value }}>
+                              <span className="text-[11px] font-medium text-white drop-shadow">{g.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {bgMode === "image" && (
+                        <>
+                          <input ref={bgFileRef} type="file" accept="image/*"
+                            onChange={e => { const f = e.target.files?.[0]; if(f) setBgImageUrl(URL.createObjectURL(f)); }}
+                            className="hidden" />
+                          <button onClick={() => bgFileRef.current?.click()}
+                            className="w-full py-3 border border-dashed border-white/15 rounded-xl text-sm text-white/40 hover:text-white/70 hover:border-white/30 transition-colors flex items-center justify-center gap-2">
+                            <ImageIcon size={15}/> {bgImageUrl ? "Cambiar imagen" : "Subir imagen de fondo"}
+                          </button>
+                          {bgImageUrl && <div className="w-full h-20 rounded-lg overflow-hidden border border-white/10"><img src={bgImageUrl} alt="" className="w-full h-full object-cover" /></div>}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* TAB: Efectos */}
+                  {activeTab === "efectos" && (
+                    <div className="space-y-5">
+                      {/* Blur background */}
+                      <div className="p-4 bg-white/3 border border-white/8 rounded-xl space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium">Difuminar fondo</p>
+                            <p className="text-xs text-white/40 mt-0.5">Desenfoca el fondo original</p>
+                          </div>
+                          <button onClick={() => setBlurBg(!blurBg)}
+                            className={`w-11 h-6 rounded-full transition-colors relative ${blurBg ? "bg-[#a78bfa]" : "bg-white/15"}`}>
+                            <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${blurBg ? "left-6" : "left-1"}`} />
+                          </button>
+                        </div>
+                        {blurBg && (
+                          <div>
+                            <div className="flex justify-between text-xs text-white/40 mb-1"><span>Intensidad</span><span>{blurAmount}px</span></div>
+                            <input type="range" min={2} max={30} step={1} value={blurAmount} onChange={e => setBlurAmount(Number(e.target.value))} className="w-full accent-[#a78bfa]" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Shadow */}
+                      <div className="p-4 bg-white/3 border border-white/8 rounded-xl space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium">Sombra</p>
+                            <p className="text-xs text-white/40 mt-0.5">Agrega profundidad al sujeto</p>
+                          </div>
+                          <button onClick={() => setShadow(!shadow)}
+                            className={`w-11 h-6 rounded-full transition-colors relative ${shadow ? "bg-[#a78bfa]" : "bg-white/15"}`}>
+                            <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${shadow ? "left-6" : "left-1"}`} />
+                          </button>
+                        </div>
+                        {shadow && (
+                          <div>
+                            <div className="flex justify-between text-xs text-white/40 mb-1"><span>Opacidad</span><span>{shadowOpacity}%</span></div>
+                            <input type="range" min={10} max={90} step={5} value={shadowOpacity} onChange={e => setShadowOpacity(Number(e.target.value))} className="w-full accent-[#a78bfa]" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Color adjustments */}
+                      <div className="p-4 bg-white/3 border border-white/8 rounded-xl space-y-3">
+                        <p className="text-sm font-medium">Ajustes de imagen</p>
+                        {[
+                          { label: "Brillo", value: brightness, set: setBrightness, min: 50, max: 200 },
+                          { label: "Contraste", value: contrast, set: setContrast, min: 50, max: 200 },
+                          { label: "Saturación", value: saturation, set: setSaturation, min: 0, max: 200 },
+                        ].map(adj => (
+                          <div key={adj.label}>
+                            <div className="flex justify-between text-xs text-white/40 mb-1">
+                              <span>{adj.label}</span>
+                              <span>{adj.value}%</span>
+                            </div>
+                            <input type="range" min={adj.min} max={adj.max} step={5} value={adj.value}
+                              onChange={e => adj.set(Number(e.target.value))}
+                              className="w-full accent-[#a78bfa]" />
+                          </div>
+                        ))}
+                        <button onClick={() => { setBrightness(100); setContrast(100); setSaturation(100); }}
+                          className="w-full py-2 border border-white/10 rounded-lg text-xs text-white/40 hover:text-white/70 transition-colors">
+                          Resetear ajustes
+                        </button>
                       </div>
                     </div>
                   )}
 
-                  {bgMode === "gradient" && (
-                    <div className="grid grid-cols-2 gap-2">
-                      {PRESET_GRADIENTS.map(g => (
-                        <button key={g.value} onClick={() => setBgGradient(g.value)}
-                          className={`relative h-12 rounded-xl overflow-hidden border-2 transition-all flex items-center justify-center ${bgGradient === g.value ? "border-[#a78bfa]" : "border-transparent hover:border-white/20"}`}
-                          style={{ background: g.value }}>
-                          <span className="text-[11px] font-medium text-white drop-shadow">{g.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {bgMode === "image" && (
-                    <>
-                      <input ref={bgFileRef} type="file" accept="image/*"
-                        onChange={e => { const f = e.target.files?.[0]; if(f) setBgImageUrl(URL.createObjectURL(f)); }}
-                        className="hidden" />
-                      <button onClick={() => bgFileRef.current?.click()}
-                        className="w-full py-3 border border-dashed border-white/15 rounded-xl text-sm text-white/40 hover:text-white/70 hover:border-white/30 transition-colors flex items-center justify-center gap-2">
-                        <ImageIcon size={15}/> {bgImageUrl ? "Cambiar imagen" : "Subir imagen de fondo"}
-                      </button>
-                      {bgImageUrl && (
-                        <div className="w-full h-20 rounded-lg overflow-hidden border border-white/10">
-                          <img src={bgImageUrl} alt="Fondo" className="w-full h-full object-cover" />
-                        </div>
-                      )}
-                    </>
-                  )}
-
+                  {/* Download button always visible */}
                   <div className="pt-2 border-t border-white/8">
                     <button onClick={handleDownload}
                       className="w-full py-3 bg-[#a78bfa] text-black font-medium rounded-xl hover:bg-[#c4b5fd] transition-colors flex items-center justify-center gap-2 text-sm">
-                      <Download size={15}/> Descargar {bgMode === "transparent" ? "PNG" : "JPG"}
+                      <Download size={15}/> Descargar {bgMode === "transparent" && !blurBg ? "PNG" : "JPG"}
                     </button>
                   </div>
                 </div>
