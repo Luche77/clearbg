@@ -26,14 +26,17 @@ export default function HomePage() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [editMode, setEditMode] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
 
   // Editor
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cursorCanvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [brushMode, setBrushMode] = useState<BrushMode>("remove");
   const [brushSize, setBrushSize] = useState(20);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [showOriginal, setShowOriginal] = useState(false);
   const originalImgRef = useRef<HTMLImageElement | null>(null);
+  const resultImgRef = useRef<HTMLImageElement | null>(null);
 
   // Background
   const [bgMode, setBgMode] = useState<BgMode>("transparent");
@@ -41,6 +44,15 @@ export default function HomePage() {
   const [bgGradient, setBgGradient] = useState(PRESET_GRADIENTS[0].value);
   const [bgImageUrl, setBgImageUrl] = useState<string | null>(null);
   const bgFileRef = useRef<HTMLInputElement>(null);
+  const bgImgRef = useRef<HTMLImageElement | null>(null);
+
+  // Load bg image ref when bgImageUrl changes
+  useEffect(() => {
+    if (!bgImageUrl) return;
+    const img = new Image();
+    img.onload = () => { bgImgRef.current = img; };
+    img.src = bgImageUrl;
+  }, [bgImageUrl]);
 
   const initCanvas = useCallback(() => {
     if (!resultUrl) return;
@@ -54,26 +66,29 @@ export default function HomePage() {
       const ctx = canvas.getContext("2d")!;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
-      // Also load original
-      if (originalUrl) {
-        const orig = new Image();
-        orig.crossOrigin = "anonymous";
-        orig.onload = () => { originalImgRef.current = orig; };
-        orig.src = originalUrl;
-      }
+      resultImgRef.current = img;
+      // Also init cursor canvas
+      const cc = cursorCanvasRef.current;
+      if (cc) { cc.width = img.naturalWidth; cc.height = img.naturalHeight; }
     };
     img.src = resultUrl;
+    // Load original
+    if (originalUrl) {
+      const orig = new Image();
+      orig.crossOrigin = "anonymous";
+      orig.onload = () => { originalImgRef.current = orig; };
+      orig.src = originalUrl;
+    }
   }, [resultUrl, originalUrl]);
 
   useEffect(() => {
-    if (editMode) {
-      setTimeout(initCanvas, 50);
-    }
+    if (editMode) setTimeout(initCanvas, 80);
   }, [editMode, initCanvas]);
 
   const processImage = useCallback(async (file: File) => {
     setStage("processing");
     setEditMode(false);
+    setShowOriginal(false);
     setOriginalUrl(URL.createObjectURL(file));
     setProgress(20);
     const formData = new FormData();
@@ -96,19 +111,39 @@ export default function HomePage() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "image/*": [".jpg",".jpeg",".png",".webp"] },
-    maxFiles: 1,
-    maxSize: 25 * 1024 * 1024,
+    maxFiles: 1, maxSize: 25*1024*1024,
     onDropAccepted: ([file]) => processImage(file),
     onDropRejected: () => toast.error("Archivo muy grande o formato no compatible."),
   });
 
+  // Convert mouse event to canvas coordinates
   const getCanvasPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
-    return {
-      x: (e.clientX - rect.left) * (canvas.width / rect.width),
-      y: (e.clientY - rect.top) * (canvas.height / rect.height),
-    };
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY, scaleX, scaleY };
+  };
+
+  // Draw cursor circle on cursor canvas
+  const drawCursor = (x: number, y: number) => {
+    const cc = cursorCanvasRef.current;
+    if (!cc) return;
+    const ctx = cc.getContext("2d")!;
+    ctx.clearRect(0, 0, cc.width, cc.height);
+    ctx.beginPath();
+    ctx.arc(x, y, brushSize, 0, Math.PI * 2);
+    ctx.strokeStyle = brushMode === "remove" ? "rgba(255,80,80,0.9)" : "rgba(80,255,120,0.9)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = brushMode === "remove" ? "rgba(255,80,80,0.15)" : "rgba(80,255,120,0.15)";
+    ctx.fill();
+  };
+
+  const clearCursor = () => {
+    const cc = cursorCanvasRef.current;
+    if (!cc) return;
+    cc.getContext("2d")!.clearRect(0, 0, cc.width, cc.height);
   };
 
   const paint = useCallback((x: number, y: number) => {
@@ -131,11 +166,101 @@ export default function HomePage() {
     ctx.restore();
   }, [brushMode, brushSize]);
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => { setIsDrawing(true); const p = getCanvasPos(e); paint(p.x, p.y); };
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => { if (!isDrawing) return; const p = getCanvasPos(e); paint(p.x, p.y); };
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    setIsDrawing(true);
+    const p = getCanvasPos(e);
+    paint(p.x, p.y);
+    drawCursor(p.x, p.y);
+  };
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const p = getCanvasPos(e);
+    drawCursor(p.x, p.y);
+    if (!isDrawing) return;
+    paint(p.x, p.y);
+  };
   const handleMouseUp = () => setIsDrawing(false);
+  const handleMouseLeave = () => { setIsDrawing(false); clearCursor(); };
 
-  const handleReset = () => { initCanvas(); };
+  const handleReset = () => initCanvas();
+
+  // Build final image with background applied
+  const buildFinalCanvas = (): HTMLCanvasElement => {
+    const sourceCanvas = canvasRef.current!;
+    const off = document.createElement("canvas");
+    off.width = sourceCanvas.width;
+    off.height = sourceCanvas.height;
+    const ctx = off.getContext("2d")!;
+
+    if (bgMode === "color") {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, off.width, off.height);
+    } else if (bgMode === "gradient") {
+      const match = bgGradient.match(/#[0-9a-f]{3,8}/gi);
+      if (match && match.length >= 2) {
+        const g = ctx.createLinearGradient(0, 0, off.width, off.height);
+        g.addColorStop(0, match[0]); g.addColorStop(1, match[1]);
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, off.width, off.height);
+      }
+    } else if (bgMode === "image" && bgImgRef.current) {
+      const bw = bgImgRef.current.naturalWidth, bh = bgImgRef.current.naturalHeight;
+      const scale = Math.max(off.width / bw, off.height / bh);
+      const sw = bw * scale, sh = bh * scale;
+      ctx.drawImage(bgImgRef.current, (off.width-sw)/2, (off.height-sh)/2, sw, sh);
+    }
+
+    ctx.drawImage(sourceCanvas, 0, 0);
+    return off;
+  };
+
+  const handleDownload = () => {
+    if (editMode) {
+      const off = buildFinalCanvas();
+      const isPng = bgMode === "transparent";
+      const a = document.createElement("a");
+      a.href = off.toDataURL(isPng ? "image/png" : "image/jpeg", 0.95);
+      a.download = `clearbg-resultado.${isPng ? "png" : "jpg"}`;
+      a.click();
+    } else {
+      // Vista previa — if bg is set, draw on offscreen canvas
+      if (bgMode !== "transparent" && resultImgRef.current) {
+        // init canvas first then download
+        const tmpCanvas = document.createElement("canvas");
+        const img = resultImgRef.current;
+        tmpCanvas.width = img.naturalWidth;
+        tmpCanvas.height = img.naturalHeight;
+        const ctx = tmpCanvas.getContext("2d")!;
+        if (bgMode === "color") { ctx.fillStyle = bgColor; ctx.fillRect(0,0,tmpCanvas.width,tmpCanvas.height); }
+        else if (bgMode === "gradient") {
+          const match = bgGradient.match(/#[0-9a-f]{3,8}/gi);
+          if (match?.length >= 2) { const g = ctx.createLinearGradient(0,0,tmpCanvas.width,tmpCanvas.height); g.addColorStop(0,match[0]); g.addColorStop(1,match[1]); ctx.fillStyle=g; ctx.fillRect(0,0,tmpCanvas.width,tmpCanvas.height); }
+        } else if (bgMode === "image" && bgImgRef.current) {
+          const bw = bgImgRef.current.naturalWidth, bh = bgImgRef.current.naturalHeight;
+          const scale = Math.max(tmpCanvas.width/bw, tmpCanvas.height/bh);
+          ctx.drawImage(bgImgRef.current, (tmpCanvas.width-bw*scale)/2, (tmpCanvas.height-bh*scale)/2, bw*scale, bh*scale);
+        }
+        ctx.drawImage(img, 0, 0);
+        const a = document.createElement("a");
+        a.href = tmpCanvas.toDataURL("image/jpeg", 0.95);
+        a.download = "clearbg-resultado.jpg";
+        a.click();
+      } else {
+        const a = document.createElement("a");
+        a.href = resultUrl!;
+        a.download = "clearbg-resultado.png";
+        a.click();
+      }
+    }
+  };
+
+  // Load resultImgRef when resultUrl changes (for download in preview mode)
+  useEffect(() => {
+    if (!resultUrl) return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => { resultImgRef.current = img; };
+    img.src = resultUrl;
+  }, [resultUrl]);
 
   const getPreviewStyle = (): React.CSSProperties => {
     const checker = `url("data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='10' height='10' fill='%23333'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23333'/%3E%3Crect x='10' y='0' width='10' height='10' fill='%23222'/%3E%3Crect x='0' y='10' width='10' height='10' fill='%23222'/%3E%3C/svg%3E")`;
@@ -145,31 +270,7 @@ export default function HomePage() {
     return { backgroundImage: checker };
   };
 
-  const handleDownload = () => {
-    if (editMode) {
-      const canvas = canvasRef.current!;
-      const off = document.createElement("canvas");
-      off.width = canvas.width; off.height = canvas.height;
-      const ctx = off.getContext("2d")!;
-      if (bgMode === "color") { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, off.width, off.height); }
-      else if (bgMode === "gradient") {
-        const match = bgGradient.match(/#[0-9a-f]{3,8}/gi);
-        if (match?.length >= 2) { const g = ctx.createLinearGradient(0,0,off.width,off.height); g.addColorStop(0,match[0]); g.addColorStop(1,match[1]); ctx.fillStyle=g; ctx.fillRect(0,0,off.width,off.height); }
-      }
-      ctx.drawImage(canvas, 0, 0);
-      const a = document.createElement("a");
-      a.href = off.toDataURL(bgMode === "transparent" ? "image/png" : "image/jpeg", 0.95);
-      a.download = `clearbg-resultado.${bgMode === "transparent" ? "png" : "jpg"}`;
-      a.click();
-    } else {
-      const a = document.createElement("a");
-      a.href = resultUrl!;
-      a.download = "clearbg-resultado.png";
-      a.click();
-    }
-  };
-
-  const reset = () => { setStage("idle"); setOriginalUrl(null); setResultUrl(null); setProgress(0); setBgMode("transparent"); setEditMode(false); };
+  const reset = () => { setStage("idle"); setOriginalUrl(null); setResultUrl(null); setProgress(0); setBgMode("transparent"); setEditMode(false); setShowOriginal(false); };
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white">
@@ -252,9 +353,10 @@ export default function HomePage() {
 
           {stage === "done" && resultUrl && (
             <motion.div key="done" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              {/* Top bar */}
               <div className="flex items-center justify-between mb-4">
-                <div className="flex gap-2">
-                  <button onClick={() => setEditMode(false)}
+                <div className="flex gap-1 bg-white/5 p-1 rounded-xl">
+                  <button onClick={() => { setEditMode(false); setShowOriginal(false); }}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${!editMode ? "bg-white/10 text-white" : "text-white/40 hover:text-white"}`}>
                     Vista previa
                   </button>
@@ -269,37 +371,54 @@ export default function HomePage() {
                   </button>
                   <button onClick={handleDownload}
                     className="text-xs px-4 py-1.5 bg-[#a78bfa] text-black font-medium rounded-lg hover:bg-[#c4b5fd] transition-colors flex items-center gap-1.5">
-                    <Download size={11}/> Descargar
+                    <Download size={11}/> Descargar {bgMode === "transparent" ? "PNG" : "JPG"}
                   </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-[1fr_280px] gap-6">
-                {/* Preview / Canvas */}
-                <div>
+                {/* Image area */}
+                <div ref={containerRef}>
                   <div className="rounded-2xl overflow-hidden border border-white/10 relative" style={getPreviewStyle()}>
                     {bgMode === "image" && bgImageUrl && (
                       <img src={bgImageUrl} alt="" className="absolute inset-0 w-full h-full object-cover" />
                     )}
-                    {!editMode ? (
+
+                    {/* Preview mode */}
+                    {!editMode && (
                       <img src={resultUrl} alt="Resultado" className="w-full max-h-[500px] object-contain relative z-10 block" />
-                    ) : showOriginal && originalUrl ? (
-                      <img src={originalUrl} alt="Original" className="w-full max-h-[500px] object-contain relative z-10 block" />
-                    ) : (
-                      <canvas
-                        ref={canvasRef}
-                        className="w-full max-h-[500px] object-contain relative z-10 block"
-                        style={{ cursor: brushMode === "remove" ? "crosshair" : "cell" }}
-                        onMouseDown={handleMouseDown}
-                        onMouseMove={handleMouseMove}
-                        onMouseUp={handleMouseUp}
-                        onMouseLeave={handleMouseUp}
-                      />
+                    )}
+
+                    {/* Edit mode */}
+                    {editMode && (
+                      <div className="relative" style={{ cursor: "none" }}>
+                        {/* Original overlay when holding button */}
+                        {showOriginal && originalUrl && (
+                          <img src={originalUrl} alt="Original" className="absolute inset-0 w-full h-full object-contain z-20 pointer-events-none" />
+                        )}
+                        {/* Main editable canvas */}
+                        <canvas
+                          ref={canvasRef}
+                          className="w-full max-h-[500px] object-contain block"
+                          style={{ cursor: "none" }}
+                          onMouseDown={handleMouseDown}
+                          onMouseMove={handleMouseMove}
+                          onMouseUp={handleMouseUp}
+                          onMouseLeave={handleMouseLeave}
+                        />
+                        {/* Cursor canvas — overlaid exactly on top */}
+                        <canvas
+                          ref={cursorCanvasRef}
+                          className="absolute inset-0 w-full h-full pointer-events-none z-10"
+                          style={{ objectFit: "contain" }}
+                        />
+                      </div>
                     )}
                   </div>
 
+                  {/* Brush toolbar — only in edit mode */}
                   {editMode && (
-                    <div className="flex items-center gap-4 p-3 bg-white/3 border border-white/8 rounded-xl mt-3">
+                    <div className="flex items-center gap-3 p-3 bg-white/3 border border-white/8 rounded-xl mt-3 flex-wrap">
                       <div className="flex bg-white/5 rounded-lg p-1 gap-1">
                         <button onClick={() => setBrushMode("remove")}
                           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${brushMode === "remove" ? "bg-red-500/20 text-red-400 border border-red-500/30" : "text-white/40 hover:text-white/70"}`}>
@@ -310,16 +429,19 @@ export default function HomePage() {
                           <Plus size={12}/> Recuperar
                         </button>
                       </div>
-                      <div className="flex items-center gap-2 flex-1">
+                      <div className="flex items-center gap-2 flex-1 min-w-[140px]">
                         <span className="text-xs text-white/30">Tamaño</span>
-                        <input type="range" min={5} max={80} step={1} value={brushSize}
+                        <input type="range" min={3} max={100} step={1} value={brushSize}
                           onChange={(e) => setBrushSize(Number(e.target.value))}
                           className="flex-1 accent-[#a78bfa]" />
-                        <span className="text-xs text-white/50 w-6">{brushSize}</span>
+                        <span className="text-xs text-white/50 w-8 text-right">{brushSize}px</span>
                       </div>
-                      <button onMouseDown={() => setShowOriginal(true)} onMouseUp={() => setShowOriginal(false)} onMouseLeave={() => setShowOriginal(false)}
-                        className="text-xs px-3 py-1.5 border border-white/10 rounded-lg text-white/40 hover:text-white/70 transition-colors">
-                        Ver original
+                      <button
+                        onMouseDown={() => setShowOriginal(true)}
+                        onMouseUp={() => setShowOriginal(false)}
+                        onMouseLeave={() => setShowOriginal(false)}
+                        className={`text-xs px-3 py-1.5 border rounded-lg transition-colors select-none ${showOriginal ? "border-white/30 text-white bg-white/10" : "border-white/10 text-white/40 hover:text-white/70"}`}>
+                        👁 Ver original
                       </button>
                       <button onClick={handleReset}
                         className="text-xs px-3 py-1.5 border border-white/10 rounded-lg text-white/40 hover:text-white/70 transition-colors flex items-center gap-1">
@@ -371,11 +493,18 @@ export default function HomePage() {
 
                   {bgMode === "image" && (
                     <>
-                      <input ref={bgFileRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if(f) setBgImageUrl(URL.createObjectURL(f)); }} className="hidden" />
+                      <input ref={bgFileRef} type="file" accept="image/*"
+                        onChange={e => { const f = e.target.files?.[0]; if(f) setBgImageUrl(URL.createObjectURL(f)); }}
+                        className="hidden" />
                       <button onClick={() => bgFileRef.current?.click()}
                         className="w-full py-3 border border-dashed border-white/15 rounded-xl text-sm text-white/40 hover:text-white/70 hover:border-white/30 transition-colors flex items-center justify-center gap-2">
                         <ImageIcon size={15}/> {bgImageUrl ? "Cambiar imagen" : "Subir imagen de fondo"}
                       </button>
+                      {bgImageUrl && (
+                        <div className="w-full h-20 rounded-lg overflow-hidden border border-white/10">
+                          <img src={bgImageUrl} alt="Fondo" className="w-full h-full object-cover" />
+                        </div>
+                      )}
                     </>
                   )}
 
