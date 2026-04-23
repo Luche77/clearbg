@@ -37,6 +37,62 @@ const COLOR_PRESETS = [
   { label: "Violeta",     c: "#8b5cf6" },
 ];
 
+
+// ── Portrait Mode Component ────────────────────────────────────────────────
+// Composites: blurred original (background) + sharp subject (foreground)
+function PortraitCanvas({ originalUrl, maskCanvas, blurAmount, subjectFilter, zoom }: {
+  originalUrl: string;
+  maskCanvas: HTMLCanvasElement | null;
+  blurAmount: number;
+  subjectFilter: string;
+  zoom: number;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (!maskCanvas || !originalUrl) return;
+    const canvas = ref.current;
+    if (!canvas) return;
+    const W = maskCanvas.width, H = maskCanvas.height;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d")!;
+
+    const orig = new Image();
+    orig.crossOrigin = "anonymous";
+    orig.onload = () => {
+      ctx.clearRect(0, 0, W, H);
+
+      // Step 1: Draw blurred original as background
+      ctx.filter = `blur(${blurAmount}px)`;
+      ctx.drawImage(orig, -20, -20, W + 40, H + 40);
+      ctx.filter = "none";
+
+      // Step 2: Draw sharp original masked to subject shape
+      // Use the mask canvas alpha to clip
+      ctx.save();
+      // Create temp canvas with just the subject pixels from original
+      const tmp = document.createElement("canvas");
+      tmp.width = W; tmp.height = H;
+      const tCtx = tmp.getContext("2d")!;
+      tCtx.drawImage(orig, 0, 0, W, H);
+      tCtx.globalCompositeOperation = "destination-in";
+      tCtx.drawImage(maskCanvas, 0, 0);
+
+      ctx.drawImage(tmp, 0, 0);
+      ctx.restore();
+    };
+    orig.src = originalUrl;
+  }, [originalUrl, maskCanvas, blurAmount]);
+
+  return (
+    <canvas
+      ref={ref}
+      className="max-w-full max-h-[520px] block relative z-10"
+      style={{ transform: `scale(${zoom/100})`, transformOrigin: "center", filter: subjectFilter || "none" }}
+    />
+  );
+}
+
 export default function HomePage() {
   const [stage, setStage] = useState<Stage>("idle");
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
@@ -259,11 +315,28 @@ export default function HomePage() {
       ctx.drawImage(bgImgRef.current,(W-bw*s)/2,(H-bh*s)/2,bw*s,bh*s);
     }
 
-    // 2. Blurred original behind subject
+    // 2. Portrait mode: blurred original + sharp subject
     if (blurBg && originalImgRef.current) {
+      // Draw blurred original as background
       ctx.filter = `blur(${blurAmount}px)`;
       ctx.drawImage(originalImgRef.current, -20, -20, W+40, H+40);
       ctx.filter = "none";
+      // Draw sharp subject on top using mask
+      if (src) {
+        const tmp = document.createElement("canvas");
+        tmp.width = W; tmp.height = H;
+        const tCtx = tmp.getContext("2d")!;
+        tCtx.drawImage(originalImgRef.current, 0, 0, W, H);
+        tCtx.globalCompositeOperation = "destination-in";
+        tCtx.drawImage(src, 0, 0);
+        ctx.drawImage(tmp, 0, 0);
+      }
+      // Skip the regular subject drawing below
+      const a2 = document.createElement("a");
+      a2.href = off.toDataURL("image/jpeg", 0.95);
+      a2.download = "clearbg-retrato.jpg";
+      a2.click();
+      return;
     }
 
     // 3. Subject with effects
@@ -430,13 +503,15 @@ export default function HomePage() {
                       <img src={bgImageUrl} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
                     )}
 
-                    {/* Portrait effect: blurred original as background layer */}
-                    {blurBg && originalUrl && (
-                      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                        <img src={originalUrl} alt=""
-                          className="w-full h-full object-contain"
-                          style={{ filter: `blur(${blurAmount}px)`, transform: "scale(1.08)", transformOrigin: "center" }} />
-                      </div>
+                    {/* Portrait mode: blurred original + sharp subject via canvas compositing */}
+                    {blurBg && originalUrl && canvasReady && (
+                      <PortraitCanvas
+                        originalUrl={originalUrl}
+                        maskCanvas={canvasRef.current}
+                        blurAmount={blurAmount}
+                        subjectFilter={subjectFilter}
+                        zoom={zoom}
+                      />
                     )}
 
                     {/* Show original toggle */}
@@ -446,7 +521,7 @@ export default function HomePage() {
                         style={{ transform: `scale(${zoom/100})`, transformOrigin: "center" }} />
                     ) : (
                       /* Canvas + overlay */
-                      <div className="relative" style={{ transform: `scale(${zoom/100})`, transformOrigin: "center" }}>
+                      <div className="relative" style={{ transform: `scale(${zoom/100})`, transformOrigin: "center", display: blurBg ? "none" : "block" }}>
                         {!canvasReady && (
                           <div className="absolute inset-0 flex items-center justify-center z-20">
                             <div className="w-8 h-8 border-2 border-[#a78bfa]/30 border-t-[#a78bfa] rounded-full animate-spin" />
@@ -576,12 +651,12 @@ export default function HomePage() {
                   {/* Efectos */}
                   {activeTab === "efectos" && (
                     <div className="space-y-4">
-                      {/* Blur */}
+                      {/* Portrait mode */}
                       <div className="p-4 bg-white/3 border border-white/8 rounded-xl space-y-3">
                         <div className="flex items-center justify-between">
                           <div>
-                            <p className="text-sm font-medium">Difuminar fondo</p>
-                            <p className="text-xs text-white/40 mt-0.5">Desenfoca el fondo original</p>
+                            <p className="text-sm font-medium">Modo retrato</p>
+                            <p className="text-xs text-white/40 mt-0.5">Fondo difuminado, sujeto nítido</p>
                           </div>
                           <button onClick={() => setBlurBg(v => !v)}
                             className={`w-11 h-6 rounded-full relative transition-colors ${blurBg ? "bg-[#a78bfa]" : "bg-white/15"}`}>
@@ -589,9 +664,10 @@ export default function HomePage() {
                           </button>
                         </div>
                         {blurBg && (
-                          <div>
-                            <div className="flex justify-between text-xs text-white/40 mb-1"><span>Intensidad</span><span>{blurAmount}px</span></div>
-                            <input type="range" min={2} max={30} step={1} value={blurAmount} onChange={e => setBlurAmount(Number(e.target.value))} className="w-full accent-[#a78bfa]" />
+                          <div className="space-y-2">
+                            <div className="flex justify-between text-xs text-white/40 mb-1"><span>Intensidad del desenfoque</span><span>{blurAmount}px</span></div>
+                            <input type="range" min={2} max={25} step={1} value={blurAmount} onChange={e => setBlurAmount(Number(e.target.value))} className="w-full accent-[#a78bfa]" />
+                            <p className="text-[10px] text-white/25">El fondo se desenfoca manteniendo al sujeto nítido</p>
                           </div>
                         )}
                       </div>
