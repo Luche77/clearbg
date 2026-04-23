@@ -112,9 +112,18 @@ export default function HomePage() {
   }, [resultUrl, originalUrl]);
 
   useEffect(() => {
-    if (stage === "done") {
-      setTimeout(initCanvas, 100);
-    }
+    if (stage !== "done") return;
+    // Retry until canvas is mounted in DOM
+    let attempts = 0;
+    const tryInit = () => {
+      if (canvasRef.current) {
+        initCanvas();
+      } else if (attempts < 20) {
+        attempts++;
+        setTimeout(tryInit, 100);
+      }
+    };
+    setTimeout(tryInit, 50);
   }, [stage, initCanvas]);
 
   const processImage = useCallback(async (file: File) => {
@@ -421,10 +430,13 @@ export default function HomePage() {
                       <img src={bgImageUrl} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
                     )}
 
-                    {/* Blurred original */}
+                    {/* Portrait effect: blurred original as background layer */}
                     {blurBg && originalUrl && (
-                      <img src={originalUrl} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                        style={{ filter: `blur(${blurAmount}px)`, transform: "scale(1.1)" }} />
+                      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                        <img src={originalUrl} alt=""
+                          className="w-full h-full object-contain"
+                          style={{ filter: `blur(${blurAmount}px)`, transform: "scale(1.08)", transformOrigin: "center" }} />
+                      </div>
                     )}
 
                     {/* Show original toggle */}
