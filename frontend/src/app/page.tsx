@@ -100,6 +100,7 @@ export default function HomePage() {
   const [progress, setProgress] = useState(0);
   const [activeTab, setActiveTab] = useState<Tab>("recortar");
   const [zoom, setZoom] = useState(100);
+  const [removeMode, setRemoveMode] = useState<"auto"|"person"|"general">("auto");
 
   // Canvas — single source of truth for the edited image
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -197,7 +198,7 @@ export default function HomePage() {
     formData.append("file", file);
     try {
       setProgress(50);
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/remove`, { method: "POST", body: formData });
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/remove?mode=${removeMode}`, { method: "POST", body: formData });
       if (!res.ok) throw new Error((await res.json()).detail || "Error al procesar");
       setProgress(90);
       const blob = await res.blob();
@@ -415,6 +416,15 @@ export default function HomePage() {
                   <div>
                     <p className="text-white/70 font-medium mb-1">{isDragActive ? "Soltá la imagen acá" : "Arrastrá tu imagen acá"}</p>
                     <p className="text-white/30 text-sm">o hacé click para buscar — JPEG, PNG, WebP hasta 25MB</p>
+                  </div>
+                  <div className="flex items-center gap-2 mt-3 mb-1">
+                    <span className="text-[11px] text-white/30">Optimizar para:</span>
+                    {([["auto","Automático"],["person","Persona"],["general","Objeto/Animal"]] as ["auto"|"person"|"general", string][]).map(([m,l]) => (
+                      <button key={m} onClick={e => { e.stopPropagation(); setRemoveMode(m); }}
+                        className={`text-[11px] px-3 py-1 rounded-full border transition-all ${removeMode === m ? "border-[#a78bfa] text-[#a78bfa] bg-[#a78bfa]/10" : "border-white/10 text-white/30 hover:border-white/25"}`}>
+                        {l}
+                      </button>
+                    ))}
                   </div>
                   <div className="flex items-center gap-2 mt-2">
                     <span className="text-[11px] text-white/25 bg-white/5 px-3 py-1 rounded-full">5 gratis por día</span>
