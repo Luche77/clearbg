@@ -1,13 +1,31 @@
 """
 ClearBG — Backend en Modal con GPU A10G
 
-Usa dos modelos según el contenido:
-- BiRefNet-portrait: para personas (mejor resultado en fotos de personas)  
-- BiRefNet general: para productos, animales, objetos
+Todo automático — el sistema detecta si es persona u objeto
+y elige el mejor modelo sin que el usuario tenga que hacer nada.
 """
 
 import modal
 import io
+
+# Pre-descargar modelos durante el build de la imagen
+def download_models():
+    import os
+    from transformers import AutoModelForImageSegmentation
+    os.environ["HF_HOME"] = "/model-cache"
+    print("Descargando BiRefNet-portrait...")
+    AutoModelForImageSegmentation.from_pretrained(
+        "ZhengPeng7/BiRefNet-portrait",
+        trust_remote_code=True,
+        cache_dir="/model-cache",
+    )
+    print("Descargando BiRefNet general...")
+    AutoModelForImageSegmentation.from_pretrained(
+        "ZhengPeng7/BiRefNet",
+        trust_remote_code=True,
+        cache_dir="/model-cache",
+    )
+    print("Modelos descargados OK")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -25,6 +43,10 @@ image = (
         "python-multipart==0.0.9",
         "uvicorn==0.30.6",
     )
+    .run_function(
+        download_models,
+        volumes={"/model-cache": modal.Volume.from_name("clearbg-model-cache", create_if_missing=True)},
+    )
 )
 
 app = modal.App("clearbg-api")
@@ -33,7 +55,7 @@ model_cache = modal.Volume.from_name("clearbg-model-cache", create_if_missing=Tr
 @app.cls(
     image=image,
     gpu="A10G",
-    memory=8192,
+    memory=10240,
     volumes={"/model-cache": model_cache},
     scaledown_window=300,
 )
@@ -48,8 +70,7 @@ class BackgroundRemover:
         os.environ["HF_HOME"] = "/model-cache"
         self.device = torch.device("cuda")
 
-        # Modelo portrait — específico para personas, mejor que el general
-        print("📦 Cargando BiRefNet-portrait en GPU...")
+        print("📦 Cargando BiRefNet-portrait...")
         self.model_portrait = AutoModelForImageSegmentation.from_pretrained(
             "ZhengPeng7/BiRefNet-portrait",
             trust_remote_code=True,
@@ -58,8 +79,7 @@ class BackgroundRemover:
         self.model_portrait.to(self.device)
         self.model_portrait.eval()
 
-        # Modelo general — para productos, animales, objetos
-        print("📦 Cargando BiRefNet general en GPU...")
+        print("📦 Cargando BiRefNet general...")
         self.model_general = AutoModelForImageSegmentation.from_pretrained(
             "ZhengPeng7/BiRefNet",
             trust_remote_code=True,
@@ -68,39 +88,25 @@ class BackgroundRemover:
         self.model_general.to(self.device)
         self.model_general.eval()
 
-        print("✅ Ambos modelos listos en GPU")
+        print("✅ Modelos listos en GPU")
 
     def _run_model(self, model, image_rgb, orig_w, orig_h):
-        """Corre el modelo y devuelve la máscara en tamaño original."""
         import torch
         import numpy as np
         from PIL import Image
         from torchvision.transforms.functional import normalize
 
-        model_size = [1024, 1024]
-        resized = image_rgb.resize(model_size, Image.BILINEAR)
-        img_tensor = torch.tensor(np.array(resized), dtype=torch.float32).permute(2, 0, 1)
-        img_tensor = img_tensor / 255.0
-        img_tensor = normalize(img_tensor, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        img_tensor = img_tensor.unsqueeze(0).to(self.device)
-
+        resized = image_rgb.resize([1024, 1024], Image.BILINEAR)
+        t = torch.tensor(np.array(resized), dtype=torch.float32).permute(2,0,1) / 255.0
+        t = normalize(t, [0.485,0.456,0.406], [0.229,0.224,0.225]).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            result = model(img_tensor)
-
+            result = model(t)
         pred = result[-1].sigmoid().cpu().squeeze().numpy()
         mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L")
-        mask = mask.resize((orig_w, orig_h), Image.LANCZOS)
-        return mask
+        return mask.resize((orig_w, orig_h), Image.LANCZOS)
 
     @modal.method()
-    def remove_background(self, image_bytes: bytes, mode: str = "auto") -> bytes:
-        """
-        mode: "auto" | "person" | "general"
-        - "person": usa BiRefNet-portrait (mejor para fotos de personas)
-        - "general": usa BiRefNet general (productos, animales, objetos)
-        - "auto": detecta si hay persona y elige el modelo correcto
-        """
-        import torch
+    def remove_background(self, image_bytes: bytes) -> bytes:
         import numpy as np
         from PIL import Image, ImageOps, ImageFilter
 
@@ -110,33 +116,23 @@ class BackgroundRemover:
         orig_w, orig_h = original.size
         image_rgb = original.convert("RGB")
 
-        # Elegir modelo
-        if mode == "person":
-            mask = self._run_model(self.model_portrait, image_rgb, orig_w, orig_h)
-        elif mode == "general":
-            mask = self._run_model(self.model_general, image_rgb, orig_w, orig_h)
+        # Intentar portrait primero
+        mask_portrait = self._run_model(self.model_portrait, image_rgb, orig_w, orig_h)
+        coverage = (np.array(mask_portrait) > 128).sum() / (orig_w * orig_h)
+
+        if 0.04 < coverage < 0.82:
+            # Portrait detectó algo razonable → usarlo
+            mask = mask_portrait
         else:
-            # Auto: correr portrait primero, si la máscara cubre >10% y <90% de la imagen
-            # probablemente hay una persona bien detectada
-            mask_portrait = self._run_model(self.model_portrait, image_rgb, orig_w, orig_h)
-            import numpy as np
-            mask_arr = np.array(mask_portrait)
-            coverage = (mask_arr > 128).sum() / mask_arr.size
-            if 0.05 < coverage < 0.85:
-                # Portrait model detected something reasonable — use it
-                mask = mask_portrait
-            else:
-                # Fallback to general model
-                mask = self._run_model(self.model_general, image_rgb, orig_w, orig_h)
+            # Fallback al modelo general (autos, objetos, animales)
+            mask = self._run_model(self.model_general, image_rgb, orig_w, orig_h)
 
-        # Suavizar bordes
-        mask = mask.filter(ImageFilter.GaussianBlur(radius=0.6))
-
-        result_img = original.copy()
-        result_img.putalpha(mask)
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=0.5))
+        result = original.copy()
+        result.putalpha(mask)
 
         out = io.BytesIO()
-        result_img.save(out, format="PNG", optimize=True)
+        result.save(out, format="PNG", optimize=True)
         out.seek(0)
         return out.read()
 
@@ -144,38 +140,37 @@ class BackgroundRemover:
 @app.function(image=image)
 @modal.asgi_app()
 def api():
-    from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+    from fastapi import FastAPI, UploadFile, File, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import Response
     import uuid
 
     web_app = FastAPI(title="ClearBG API")
-    web_app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     remover = BackgroundRemover()
 
     @web_app.get("/health")
     def health():
-        return {"status": "ok", "model": "BiRefNet-portrait + BiRefNet", "device": "GPU A10G"}
+        return {"status": "ok", "models": ["BiRefNet-portrait", "BiRefNet"], "device": "GPU A10G"}
 
     @web_app.post("/api/v1/remove")
-    async def remove_background(
-        file: UploadFile = File(...),
-        mode: str = Query(default="auto", description="auto | person | general"),
-    ):
+    async def remove_background(file: UploadFile = File(...)):
         allowed = {"image/jpeg", "image/png", "image/webp"}
         if file.content_type not in allowed:
-            raise HTTPException(status_code=415, detail="Formato no soportado")
-
+            raise HTTPException(status_code=415, detail="Formato no soportado.")
         image_bytes = await file.read()
         if len(image_bytes) > 25 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Imagen demasiado grande (máx 25MB)")
-
+            raise HTTPException(status_code=413, detail="Imagen demasiado grande. Máximo 25MB.")
         try:
-            result_bytes = remover.remove_background.remote(image_bytes, mode=mode)
+            result_bytes = remover.remove_background.remote(image_bytes)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
         return Response(
             content=result_bytes,
             media_type="image/png",
