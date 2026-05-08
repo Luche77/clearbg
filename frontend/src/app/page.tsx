@@ -220,9 +220,12 @@ export default function HomePage() {
     setProgress(20);
     const formData = new FormData();
     formData.append("file", file);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90_000);
     try {
       setProgress(50);
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/remove`, { method: "POST", body: formData });
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/remove`, { method: "POST", body: formData, signal: controller.signal });
+      clearTimeout(timeout);
       if (!res.ok) throw new Error((await res.json()).detail || "Error al procesar");
       setProgress(90);
       const blob = await res.blob();
@@ -230,7 +233,11 @@ export default function HomePage() {
       setProgress(100);
       setStage("done");
     } catch (e: any) {
-      toast.error(e.message || "Algo salió mal");
+      clearTimeout(timeout);
+      const msg = e.name === "AbortError"
+        ? "Tiempo de espera agotado. Verificá que el backend esté corriendo."
+        : (e.message?.includes("fetch") ? "No se pudo conectar al servidor. Verificá la URL del backend." : e.message || "Algo salió mal");
+      toast.error(msg);
       setStage("select");
       setProgress(0);
     }
@@ -242,9 +249,12 @@ export default function HomePage() {
     setProgress(15);
     const formData = new FormData();
     formData.append("file", file);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
     try {
       setProgress(40);
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/upscale`, { method: "POST", body: formData });
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/upscale`, { method: "POST", body: formData, signal: controller.signal });
+      clearTimeout(timeout);
       if (!res.ok) throw new Error((await res.json()).detail || "Error al procesar");
       setProgress(90);
       const blob = await res.blob();
@@ -252,7 +262,11 @@ export default function HomePage() {
       setProgress(100);
       setStage("done");
     } catch (e: any) {
-      toast.error(e.message || "Algo salió mal");
+      clearTimeout(timeout);
+      const msg = e.name === "AbortError"
+        ? "Tiempo de espera agotado (2 min). El modelo tarda más de lo esperado."
+        : (e.message?.includes("fetch") ? "No se pudo conectar al servidor. Verificá que el backend esté corriendo." : e.message || "Algo salió mal");
+      toast.error(msg);
       setStage("select");
       setProgress(0);
     }
