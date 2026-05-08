@@ -1,8 +1,8 @@
 """
-Images API — Core endpoints for background removal.
+Images API — Core endpoints for image processing.
 
 POST /api/v1/remove     → Upload image, get back PNG with transparency
-GET  /api/v1/jobs/{id}  → Poll job status (for async processing)
+POST /api/v1/upscale    → Upscale image up to 4K with Real-ESRGAN
 POST /api/v1/batch      → Multiple images at once (Pro plan only)
 """
 
@@ -131,6 +131,40 @@ async def batch_remove(files: list[UploadFile] = File(...)):
             results.append({"filename": file.filename, "error": str(e), "status": "error"})
 
     return JSONResponse(content={"results": results})
+
+
+@router.post("/upscale")
+async def upscale_image(
+    file: UploadFile = File(...),
+    scale: int = 4,
+):
+    """
+    Upscale an image up to 4× using Real-ESRGAN AI model.
+
+    Returns a JPEG at up to 4K resolution (3840px ceiling).
+    Scale 2 = 2×, scale 4 = 4× (default).
+    """
+    validate_image(file)
+    if scale not in (2, 4):
+        raise HTTPException(status_code=400, detail="Scale must be 2 or 4.")
+
+    image_bytes = await file.read()
+    if len(image_bytes) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"Image too large. Max size is {settings.MAX_IMAGE_SIZE_MB}MB.")
+
+    try:
+        from app.services.upscale_service import UpscaleService
+        result_bytes = await UpscaleService.upscale(image_bytes=image_bytes, scale=scale)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upscaling failed: {str(e)}")
+
+    return Response(
+        content=result_bytes,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": f'attachment; filename="clearbg_4k_{uuid.uuid4().hex[:8]}.jpg"',
+        },
+    )
 
 
 def _png_to_jpg_white_bg(png_bytes: bytes) -> bytes:

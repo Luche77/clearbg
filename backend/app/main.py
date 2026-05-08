@@ -24,5 +24,8 @@ app.include_router(users.router, prefix="/api/v1", tags=["users"])
 @app.on_event("startup")
 async def startup_event():
     from app.services.model_service import ModelService
+    from app.services.upscale_service import UpscaleService
     await ModelService.load_model()
     print("✅ BiRefNet model loaded and ready")
+    await UpscaleService.load_model()
+    print("✅ Real-ESRGAN model loaded and ready")

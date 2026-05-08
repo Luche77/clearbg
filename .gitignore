@@ -1,0 +1,42 @@
+# ── Secrets / Env vars ────────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.production.local
+.env.development.local
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.vercel/
+
+# ── Models & large files ──────────────────────────────────────────────────────
+*.pth
+*.onnx
+*.safetensors
+*.bin
+/model-cache/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/settings.json
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+postgres_data/
